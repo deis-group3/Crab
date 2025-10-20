@@ -1,0 +1,1 @@
+rsync -au ./ group3@192.168.1.9:/home/group3/ros2_ws/src/crab/crab
