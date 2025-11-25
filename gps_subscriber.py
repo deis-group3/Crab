@@ -64,9 +64,9 @@ class MinimalSubscriber(Node):
             elif (index == 4):
                 our_robot_row_back = row_splited
             elif (index != -1):
-                crab = Crab(index, float(row_splited[0]) / 1000.0, float(row_splited[1]) / 1000.0)
+                crab = Crab(index, float(row_splited[0]) / 1000.0 * 1.5, float(row_splited[1]) / 1000.0 * 1.5)
                 self.crabs.append(crab)
-                print(index,": pos:", crab.pos)
+                #print(index,": pos:", crab.pos)
 
                 if (index == 7):
                     self.crab7_x = crab.pos[0]
@@ -75,8 +75,8 @@ class MinimalSubscriber(Node):
 
         if (our_robot_row_front != None and our_robot_row_back != None):
             self.robot_pos = (
-                (float(our_robot_row_front[0]) + float(our_robot_row_back[0])) / 2.0 / 1000.0,
-                (float(our_robot_row_front[1]) + float(our_robot_row_back[1])) / 2.0 / 1000.0
+                (float(our_robot_row_front[0]) + float(our_robot_row_back[0])) / 2.0 / 1000.0 * 1.5,
+                (float(our_robot_row_front[1]) + float(our_robot_row_back[1])) / 2.0 / 1000.0 * 1.5
             )
             self.new_position = True
             print("Robot: x=", self.robot_pos[0], ", y=",  self.robot_pos[1])
@@ -93,20 +93,3 @@ class MinimalSubscriber(Node):
             print("Robot: angle=", heading_degrees)
 
             self.is_detected = True
-        '''
-        elif (our_robot_row_front != None):
-            self.robot_pos = (
-                float(our_robot_row_front[0]) / 1000.0,
-                float(our_robot_row_front[1]) / 1000.0
-            )
-            new_position = True
-            print("Robot: x=", self.robot_pos[0], ", y=",  self.robot_pos[1])
-        elif (our_robot_row_back != None):
-            self.robot_pos = (
-                float(our_robot_row_back[0]) / 1000.0,
-                float(our_robot_row_back[1]) / 1000.0
-            )
-            new_position = True
-            print("Robot: x=", self.robot_pos[0], ", y=",  self.robot_pos[1])
-
-        '''
