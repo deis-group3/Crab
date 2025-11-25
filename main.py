@@ -1,5 +1,6 @@
 import threading
 import time, math
+import pigpio
 
 import rclpy
 from rclpy.node import Node
@@ -8,6 +9,9 @@ from std_msgs.msg import String
 from crab import gps_subscriber
 from crab.gps_subscriber import MinimalSubscriber
 from crab.motor_controller import MotorController
+from crab import encoders
+from crab import odometry
+from crab import EKF
 
 running = True
 gps_subscriber = None
@@ -18,41 +22,66 @@ state_turn = 1
 state_backoff = 2
 current_state = 0
 
-def goTo(target_pos, target_heading):
-    if (gps_subscriber.is_detected == False):
-        return
-    
-    kp_ang = 2.0
-    kp_pos = 0.2
+WHEEL_RADIUS = 0.0325
+WHEEL_BASE   = 0.15 - 0.04 
+TICKS_PER_REV = 190
 
-    dx = target_pos[0] - gps_subscriber.robot_pos[0]
-    dy = target_pos[1] - gps_subscriber.robot_pos[1]
-    distance = math.sqrt(dx**2 + dy**2)
-    angle_to_goal = math.atan2(dy, dx)
-    angle_error = angle_to_goal - gps_subscriber.robot_heading
-    heading_error = target_heading - gps_subscriber.robot_heading
-    angle_error = math.atan2(math.sin(angle_error), math.cos(angle_error))
-    heading_error = math.atan2(math.sin(heading_error), math.cos(heading_error))
+def compute_motor_speeds(x, y, theta, tx, ty):
+    dx = tx - x
+    dy = ty - y
+    target_angle = math.atan2(dy, dx)
 
-    v_out = 0.0
-    omega_out = 0.0
+    # Normalize angle error to [-pi, pi]
+    angle_error = target_angle - theta
+    angle_error = (angle_error + math.pi) % (2 * math.pi) - math.pi
 
-    if (abs(angle_error) > 0.1):
-        omega_out = kp_ang * angle_error
-    elif (distance > 0.02):
-        v_out = min(2.0, kp_pos * distance)
-        omega_out = kp_pos * angle_error
-    elif (abs(heading_error) > 0.025):
-        omega_out = kp_ang * heading_error
+    dist_error = math.hypot(dx, dy)
+
+    # ------------------------------
+    # Tunable parameters
+    # ------------------------------
+    ANGLE_THRESHOLD = math.radians(4)
+    STOP_DISTANCE = 0.06 
+    MAX_LINEAR = 1.0                     # softer top speed
+    MAX_ANGULAR = 1.0                    # max turning speed
+
+    # Smooth gains
+    K_linear = 3.0                       # lower = smoother acceleration
+    K_angular = 3.0                      # higher = snappier rotation
+
+    if dist_error < STOP_DISTANCE:
+        return 0.0, 0.0
+
+    # ------------------------------
+    # PRIORITIZE TURNING FIRST
+    # If angle error is large, do rotation-in-place
+    # ------------------------------
+    if abs(angle_error) > ANGLE_THRESHOLD:
+        v = 0.0
+        w = K_angular * angle_error
     else:
-        v_out = 0.0
-        omega_out = 0.0
+        # Face is mostly aligned → allow forward movement
+        v = K_linear * dist_error
+        w = K_angular * angle_error * 0.5   # damp turning at higher speeds
 
-    omega_out = max(min(omega_out, 0.15), -0.15)
-    v_out = max(min(v_out, 0.5), -0.5)
+    # ------------------------------
+    # Clamp speeds
+    # ------------------------------
+    v = max(-MAX_LINEAR, min(MAX_LINEAR, v))
+    w = max(-MAX_ANGULAR, min(MAX_ANGULAR, w))
 
-    return (v_out, omega_out)
+    # ------------------------------
+    # Differential drive conversion
+    # ------------------------------
+    left = v - w
+    right = v + w
 
+    # Normalize into [-1, 1]
+    max_mag = max(1, abs(left), abs(right))
+    left /= max_mag
+    right /= max_mag
+
+    return left, right
 
 def check_for_exit(): 
     global running
@@ -79,72 +108,40 @@ def main(args=None):
 
     motor_controller = MotorController() 
 
+    pi = pigpio.pi()
+    if not pi.connected:
+        raise RuntimeError("pigpiod not running")
+
+    enc_left = encoders.SingleEncoder(pi, encoders.ENC_LEFT, "Left")
+    enc_right = encoders.SingleEncoder(pi, encoders.ENC_RIGHT, "Right")
+
+    odom = odometry.DifferentialDriveOdometry(WHEEL_RADIUS, WHEEL_BASE, TICKS_PER_REV)
+    
     while (running):
         if (toolgate2):
-            gps_subscriber.debug_vel_x = 0
-            gps_subscriber.debug_vel_y = 0
-
-            time.sleep(1.0)
-
-            motor_controller.drive([gps_subscriber.debug_vel_x * 0.5, gps_subscriber.debug_vel_y * 0.5])
+            motor_controller.drive([gps_subscriber.debug_vel_x, gps_subscriber.debug_vel_y])
             continue
 
-        
-        if (gps_subscriber.is_detected):
-            
-            if (current_state == state_forward):
-                closest_crab = None
-                closest_dst = 1000000
-                for crab in gps_subscriber.crabs:
-                    dx = crab.pos[0] - gps_subscriber.robot_pos[0]
-                    dy = crab.pos[1] - gps_subscriber.robot_pos[1]
-                    dst = math.sqrt(dx**2 + dy**2)
-                    if (dst < closest_dst):
-                        closest_crab = crab
-                        closest_dst = dst
-                
-                if (closest_crab != None and closest_dst < 0.3):
-                    current_state = state_turn
-                else:
-                    motor_controller.drive((1.0, 1.0))
-                    time.sleep(0.015)
-                    motor_controller.drive((0.0, 0.0))
-                    time.sleep(0.015)
+        if (not gps_subscriber.is_detected):
+            time.sleep(0.01)
+            continue
 
-            if (current_state == state_turn):
-                motor_controller.drive((0.4, -0.4))
-                time.sleep(2.2)
-                current_state = state_backoff
+        odom.update(enc_left.get_ticks(), enc_right.get_ticks())
 
-            if (current_state == state_backoff):
-                for i in range(100):
-                    motor_controller.drive((1.0, 1.0))
-                    time.sleep(0.015)
-                    motor_controller.drive((0.0, 0.0))
-                    time.sleep(0.015)
-                current_state = state_forward
-            
+        if (gps_subscriber.new_position):
+            gps_subscriber.new_position = False
 
-            ''' Stop at if to close
+            odom.setPos(gps_subscriber.robot_pos[0], gps_subscriber.robot_pos[1], gps_subscriber.robot_heading)
 
-            to_close_to_crab = False
-            for crab in gps_subscriber.crabs:
-                dx = crab.pos[0] - gps_subscriber.robot_pos[0]
-                dy = crab.pos[1] - gps_subscriber.robot_pos[1]
-                dst = math.sqrt(dx**2 + dy**2)
-                #print("dst:",dst)
-                if (dst < 0.3):
-                    to_close_to_crab = True
+        left, right = compute_motor_speeds(odom.x, odom.y, odom.theta, gps_subscriber.crab7_x, gps_subscriber.crab7_y)
 
-            if (to_close_to_crab == False):
-                motor_controller.drive((1.0, 1.0))
-                time.sleep(0.015)
-                motor_controller.drive((0.0, 0.0))
-                time.sleep(0.015)
-            else:
-                motor_controller.drive((0,0))
-            '''     
-        time.sleep(0.001)
+        motor_controller.drive((left, right))
+        enc_left.set_direction(left)
+        enc_right.set_direction(right)
+
+        time.sleep(0.007)
+        motor_controller.drive((0, 0))
+        time.sleep(0.002)
 
     #Shutdown
     print("Shuting down...")
