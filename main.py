@@ -11,7 +11,6 @@ from crab.gps_subscriber import MinimalSubscriber
 from crab.motor_controller import MotorController
 from crab import encoders
 from crab import odometry
-from crab import EKF
 
 running = True
 gps_subscriber = None
