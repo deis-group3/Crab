@@ -1,4 +1,4 @@
-import math
+import math, time
 
 class DifferentialDriveOdometry:
     def __init__(self, wheel_radius, wheel_base, ticks_per_rev):
@@ -12,6 +12,25 @@ class DifferentialDriveOdometry:
 
         self.prev_ticks_left = 0
         self.prev_ticks_right = 0
+
+        self.history = []
+        self.max_history_size = 5000
+
+
+    def _save_history(self):
+        now = time.time()
+        self.history.append((now, self.x, self.y, self.theta))
+
+        if len(self.history) > self.max_history_size:
+            self.history = self.history[-self.max_history_size:]
+
+    def get_pose_at_time(self, timestamp):
+        if not self.history:
+            return None
+
+        # Find the entry with timestamp closest to requested time
+        closest = min(self.history, key=lambda h: abs(h[0] - timestamp))
+        return closest
 
     def update(self, ticks_left, ticks_right):
         # Delta ticks
@@ -46,10 +65,14 @@ class DifferentialDriveOdometry:
         dy = self.y - old_y
         dtheta = self.theta - old_theta
 
+        self._save_history()
+
         return self.x, self.y, self.theta, dx, dy, dtheta
 
     def setPos(self, x, y, theta):
         self.x = x
         self.y = y
-        self.theta = theta
-        self.theta = (self.theta + math.pi) % (2 * math.pi) - math.pi
+        self.theta = (theta + math.pi) % (2 * math.pi) - math.pi
+
+        self.history.clear()
+        self.history.append((time.time(), self.x, self.y, self.theta))

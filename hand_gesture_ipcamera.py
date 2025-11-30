@@ -6,116 +6,241 @@ import numpy as np
 mp_hands = mp.solutions.hands
 mp_drawing = mp.solutions.drawing_utils
 
-def classify_hand(hand_landmarks, image):
+
+class HandGestureDetector:
     """
-    Orientation-invariant classification:
-    - Compute how "open" the hand is based on distances
-      from wrist to fingertips, normalized by palm size.
+    Open the camera once and reuse it in your main loop.
+
+    Usage:
+
+        from hand_gesture_ipcamera import HandGestureDetector
+
+        detector = HandGestureDetector(
+            camera_url="http://192.168.1.2/mjpg/video.mjpg",
+            debug=False,         # True if you want a debug window
+            x_range_m=3.6,       # physical width in meters
+            y_range_m=2.4,       # physical height in meters
+        )
+
+        for ... in main_loop:
+            gesture, loc_m, loc_px = detector.read_gesture()
+            # gesture: "OPEN PALM" / "FIST" / "UNKNOWN" / None
+            # loc_m:   (x_m, y_m) in meters from bottom-left, or None
+            # loc_px:  (cx_px, cy_px) in pixels from top-left, or None
+
+        detector.release()
     """
 
-    landmarks = hand_landmarks.landmark
+    def __init__(
+        self,
+        camera_url: str = "http://192.168.1.2/mjpg/video.mjpg",
+        debug: bool = False,
+        x_range_m: float = 2.4,
+        y_range_m: float = 3.6,
+    ):
+        self.camera_url = camera_url
+        self.debug = debug
+        self.x_range_m = x_range_m
+        self.y_range_m = y_range_m
 
-    # Convert a landmark to a 3D vector (normalized coords)
-    def v(idx):
-        lm = landmarks[idx]
-        return np.array([lm.x, lm.y, lm.z], dtype=float)
+        # Open camera once
+        self.cap = cv2.VideoCapture(self.camera_url)
+        if not self.cap.isOpened():
+            raise RuntimeError(f"Could not open camera stream at {self.camera_url}")
 
-    wrist = v(0)
+        # Create one persistent MediaPipe Hands instance
+        self.hands = mp_hands.Hands(
+            static_image_mode=False,
+            max_num_hands=1,
+            min_detection_confidence=0.3,
+            min_tracking_confidence=0.4,
+        )
 
-    # Fingertips: thumb, index, middle, ring, pinky
-    tip_indices = [4, 8, 12, 16, 20]
-    # MCP joints (base of each finger)
-    mcp_indices = [2, 5, 9, 13, 17]
+    # -------------------- internal helpers --------------------
 
-    tip_dists = [np.linalg.norm(v(i) - wrist) for i in tip_indices]
-    mcp_dists = [np.linalg.norm(v(i) - wrist) for i in mcp_indices]
+    def _classify_hand(self, hand_landmarks) -> str:
+        """
+        Classify a single hand as OPEN PALM, FIST, or UNKNOWN
+        based on how "open" the hand is.
+        """
+        landmarks = hand_landmarks.landmark
 
-    # Palm size ~ average wrist→MCP distance
-    palm_size = np.mean(mcp_dists)
+        wrist_idx = 0
+        fingertip_ids = [4, 8, 12, 16, 20]
+        mcp_ids = [2, 5, 9, 13, 17]
 
-    # Avoid division by zero
-    if palm_size < 1e-6:
-        return "UNKNOWN"
+        wrist = np.array(
+            [
+                landmarks[wrist_idx].x,
+                landmarks[wrist_idx].y,
+                landmarks[wrist_idx].z,
+            ],
+            dtype=float,
+        )
 
-    # "Openness" = how far the tips are compared to the palm size
-    openness = np.mean(tip_dists) / palm_size
+        fingertip_dists = []
+        for idx in fingertip_ids:
+            tip = np.array(
+                [landmarks[idx].x, landmarks[idx].y, landmarks[idx].z],
+                dtype=float,
+            )
+            fingertip_dists.append(np.linalg.norm(tip - wrist))
 
-    # Tune these thresholds if needed
-    if openness > 1.8:
-        return "OPEN PALM"
-    elif openness < 1.3:
-        return "FIST"
-    else:
-        return "UNKNOWN"
+        mcp_dists = []
+        for idx in mcp_ids:
+            base = np.array(
+                [landmarks[idx].x, landmarks[idx].y, landmarks[idx].z],
+                dtype=float,
+            )
+            mcp_dists.append(np.linalg.norm(base - wrist))
 
-def main():
-    CAMERA_URL = "http://192.168.1.2/mjpg/video.mjpg"
-    cap = cv2.VideoCapture(CAMERA_URL)
+        if not mcp_dists or not fingertip_dists:
+            return "UNKNOWN"
 
-    if not cap.isOpened():
-        print("Error: Could not open webcam.")
-        return
+        palm_size = float(np.mean(mcp_dists))
+        mean_tip_dist = float(np.mean(fingertip_dists))
 
-    with mp_hands.Hands(
-        static_image_mode=False,
-        max_num_hands=1,
-        min_detection_confidence=0.5,
-        min_tracking_confidence=0.5
-    ) as hands:
+        if palm_size <= 1e-6:
+            return "UNKNOWN"
 
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                print("Failed to grab frame.")
-                break
+        openness = mean_tip_dist / palm_size
 
-            # Flip horizontally for a mirror-like view
-            frame = cv2.flip(frame, 1)
+        if openness > 1.3:
+            return "OPEN PALM"
+        elif openness < 1.1:
+            return "FIST"
+        else:
+            return "UNKNOWN"
 
-            # Convert BGR (OpenCV) to RGB (MediaPipe)
-            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    def _hand_location_px(self, hand_landmarks, image_shape):
+        """
+        Approximate hand center (cx, cy) in pixel coordinates.
+        Pixel space: origin at top-left, +x right, +y down.
+        """
+        h, w = image_shape[:2]
+        print(h,w)
+        xs = []
+        ys = []
+        for lm in hand_landmarks.landmark:
+            xs.append(lm.x * w)
+            ys.append(lm.y * h)
 
-            # Process frame with MediaPipe
-            results = hands.process(rgb_frame)
+        if not xs or not ys:
+            return None
 
-            gesture_label = ""
+        cx = float(np.mean(xs))
+        cy = float(np.mean(ys))
+        return cx, cy
 
-            if results.multi_hand_landmarks:
-                for hand_landmarks in results.multi_hand_landmarks:
-                    # Draw landmarks on the frame
-                    mp_drawing.draw_landmarks(
-                        frame,
-                        hand_landmarks,
-                        mp_hands.HAND_CONNECTIONS
-                    )
+    def _pixel_to_meters(self, cx_px: float, cy_px: float, image_shape):
+        h, w = image_shape[:2]
 
-                    # Classify gesture
-                    gesture_label = classify_hand(hand_landmarks, frame)
+    # Normalize 0–1
+        x_norm = cx_px / w
+        y_norm = cy_px / h
 
-                    # Only handle first hand (we set max_num_hands=1 anyway)
-                    break
+        X_RANGE = self.x_range_m
+        Y_RANGE = self.y_range_m
 
-            # Show gesture label on screen
-            if gesture_label:
-                cv2.putText(
+    # Convert to meters (origin bottom-left)
+        x_m = x_norm * X_RANGE
+        y_m = y_norm * Y_RANGE  
+
+        return x_m, y_m
+
+
+    # -------------------- public API --------------------
+
+    def read_gesture(self):
+        """
+        Grab ONE frame from the already-open camera and run gesture detection.
+
+        Returns:
+            gesture_label, location_m, location_px
+
+            gesture_label:
+                "OPEN PALM", "FIST", "UNKNOWN", or None if no hand / frame error.
+
+            location_m:
+                (x_m, y_m) in meters from bottom-left corner, or None.
+
+            location_px:
+                (cx_px, cy_px) in pixels from top-left corner, or None.
+        """
+        if self.cap is None:
+            # camera already released
+            return None, None, None
+
+        ret, frame = self.cap.read()
+        if not ret:
+            # Camera problem or end of stream
+            return None, None, None
+
+        # Convert BGR→RGB as required by MediaPipe
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        results = self.hands.process(rgb)
+
+        gesture_label = None
+        location_px = None
+        location_m = None
+
+        if results.multi_hand_landmarks:
+            hand_landmarks = results.multi_hand_landmarks[0]
+
+            # Classify
+            gesture_label = self._classify_hand(hand_landmarks)
+
+            # Location in pixels
+            location_px = self._hand_location_px(hand_landmarks, frame.shape)
+
+            # Convert to meters (bottom-left origin)
+            if location_px is not None:
+                cy_px, cx_px = location_px
+                location_m = self._pixel_to_meters(cx_px, cy_px, frame.shape)
+
+            # Debug drawing
+            if self.debug:
+                mp_drawing.draw_landmarks(
                     frame,
-                    gesture_label,
-                    (30, 60),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    1.5,
-                    (0, 255, 0),
-                    3,
-                    cv2.LINE_AA
+                    hand_landmarks,
+                    mp_hands.HAND_CONNECTIONS,
                 )
+                if location_px is not None:
+                    cy, cx = location_px
+                    cv2.circle(frame, (int(cx), int(cy)), 8, (0, 255, 0), -1)
 
-            cv2.imshow("Hand Gesture: Fist vs Open Palm", frame)
+        if self.debug:
+            text = gesture_label if gesture_label is not None else "No hand"
+            cv2.putText(
+                frame,
+                text,
+                (10, 30),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                1.0,
+                (0, 0, 255),
+                2,
+                cv2.LINE_AA,
+            )
+            cv2.imshow("Hand Gesture (debug)", frame)
+            cv2.waitKey(1)
 
-            # Press 'q' to quit
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
+        return gesture_label, location_m, location_px
 
-    cap.release()
-    cv2.destroyAllWindows()
+    def release(self):
+        """
+        Release camera and close any windows.
+        """
+        if self.cap is not None:
+            self.cap.release()
+            self.cap = None
 
-if __name__ == "__main__":
-    main()
+        if self.hands is not None:
+            # Some versions of MediaPipe have .close()
+            try:
+                self.hands.close()
+            except AttributeError:
+                pass
+            self.hands = None
+
+        if self.debug:
+            cv2.destroyAllWindows()

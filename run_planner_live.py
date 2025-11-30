@@ -10,7 +10,7 @@ def astar(occupancy, start, goal):
     """
     rows, cols = occupancy.shape
 
-    def in_bounds(r, c):
+    def in_bounds(r, c): 
         return 0 <= r < rows and 0 <= c < cols
 
     def is_free(r, c):
@@ -18,11 +18,12 @@ def astar(occupancy, start, goal):
 
     def heuristic(a, b):
         (r1, c1), (r2, c2) = a, b
-        # Manhattan distance
-        return abs(r1 - r2) + abs(c1 - c2)
+        # Chebyshev distance (8-connected) maximum of absolute differences
+        return max(abs(r1 - r2), abs(c1 - c2))
 
-    # 4-connected neighbors
-    neighbors = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+    # 8-connected neighbors (including diagonals)
+    neighbors = [(-1, 0), (1, 0), (0, -1), (0, 1),
+                 (-1, -1), (-1, 1), (1, -1), (1, 1)]
 
     open_heap = []
     heapq.heappush(open_heap, (heuristic(start, goal), 0, start))

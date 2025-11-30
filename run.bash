@@ -1,5 +1,5 @@
 sudo pigpiod
-cd ~/ros2_ws 
+cd ~/ros2_ws
 source /opt/ros/jazzy/setup.bash
 colcon build --packages-select crab
 source install/setup.bash
