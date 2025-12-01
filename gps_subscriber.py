@@ -37,6 +37,30 @@ class MinimalSubscriber(Node):
         self.crab7_x = 0
         self.crab7_y = 0
 
+        self.publisher_ = self.create_publisher(String, '/notification', 10)
+
+    def publish_food_msg(self, pos):
+        pixel_pos = (
+            pos[0] * 1000 / PIXEL_TO_METER_SCALE,
+            pos[1] * 1000 / PIXEL_TO_METER_SCALE
+        )
+
+        msg = String()
+        msg.data = f'food,3,{pixel_pos[0]};{pixel_pos[1]}'
+        self.publisher_.publish(msg)
+        #self.get_logger().info(f'Publishing: "{msg.data}"')
+
+    def publish_threat_msg(self, pos):
+        pixel_pos = (
+            pos[0] * 1000 / PIXEL_TO_METER_SCALE,
+            pos[1] * 1000 / PIXEL_TO_METER_SCALE
+        )
+
+        msg = String()
+        msg.data = f'threat,3,{pixel_pos[0]};{pixel_pos[1]}'
+        self.publisher_.publish(msg)
+        #self.get_logger().info(f'Publishing: "{msg.data}"')
+
     def to_physical_pos(self, pos):
         center = (1.0, 0.75)
 
@@ -91,9 +115,9 @@ class MinimalSubscriber(Node):
         for row in rows:
             row_splited = row.strip().split()
             index = int(row_splited[3])
-            if (index == 4):
+            if (index == 5):
                 our_robot_row_front = row_splited
-            elif (index == 5):
+            elif (index == 4):
                 our_robot_row_back = row_splited
             elif (index != -1):
                 crab_pos = (float(row_splited[0]) / 1000.0 * PIXEL_TO_METER_SCALE, 

@@ -9,15 +9,18 @@ from rclpy.node import Node
 from std_msgs.msg import String
 
 from crab import gps_subscriber
+from crab import gps_publisher
 from crab.gps_subscriber import MinimalSubscriber
 from crab.motor_controller import MotorController
 from crab import encoders
 from crab import odometry
 from crab import run_planner_live
+from crab.arduino import ArduinoClawInterface
 
 running = True
 gps_subscriber = None
-toolgate2 = False
+gps_publisher = None
+toolgate2 = True
 
 state_forward = 0
 state_turn = 1
@@ -27,6 +30,9 @@ current_state = 0
 client = None
 hand_gesture = None
 hand_pos = ()
+
+threat = False
+home_grid_pos = (10, 16)
 
 WHEEL_RADIUS = 0.0325
 WHEEL_BASE   = 0.15 - 0.04
@@ -62,7 +68,7 @@ def compute_motor_speeds(x, y, theta, tx, ty):
     # Tunable parameters
     # ------------------------------
     ANGLE_THRESHOLD = math.radians(5)
-    STOP_DISTANCE = 0.03 
+    STOP_DISTANCE = 0.03     
     MAX_LINEAR = 1.0                     # softer top speed
     MAX_ANGULAR = 1.0                    # max turning speed
 
@@ -113,7 +119,7 @@ def check_for_exit():
 def run_gps_listener():
     rclpy.spin(gps_subscriber)
 
-def gps_hand_listener():
+def gps_hand_listener(): 
     global client, hand_gesture, hand_pos
     
     client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -136,7 +142,7 @@ def gps_hand_listener():
         print("Hand pos:", hand_pos)
 
 def main(args=None):
-    global gps_subscriber, current_state
+    global gps_subscriber, current_state, threat
 
     exit_thread = threading.Thread(target=check_for_exit)
     exit_thread.daemon = True
@@ -150,10 +156,12 @@ def main(args=None):
     gps_listen_thread.start()
 
     gps_hand_listen_thead = threading.Thread(target=gps_hand_listener)
-    gps_hand_listen_thead.deamon = True
+    gps_hand_listen_thead.daemon = True
     gps_hand_listen_thead.start()
 
     motor_controller = MotorController() 
+
+    arduino = ArduinoClawInterface(port="/dev/ttyACM0", baudrate=9600)
 
     pi = pigpio.pi()
     if not pi.connected:
@@ -168,12 +176,20 @@ def main(args=None):
 
     while (running):
         if (toolgate2):
-            motor_controller.drive([gps_subscriber.debug_vel_x, gps_subscriber.debug_vel_y])
-            continue
+            if (gps_subscriber.debug_vel_x != 0 or gps_subscriber.debug_vel_y != 0):
+                #motor_controller.drive([gps_subscriber.debug_vel_x, gps_subscriber.debug_vel_y])
+                continue
 
         if (not gps_subscriber.is_detected):
             time.sleep(0.01)
             continue
+
+        status = arduino.read_status()
+        if (status is not None):
+            
+            if (status.light == 1 or status.gas == 1):
+                gps_subscriber.publish_threat_msg((odom.x, odom.y))
+                threat = True
 
         if (gps_subscriber.new_position):
             gps_subscriber.new_position = False
@@ -197,15 +213,36 @@ def main(args=None):
         #gesture, loc_m, loc_px = gesture_detector.read_gesture()
 
         #goal_pos = (gps_subscriber.crab7_x, gps_subscriber.crab7_y)
+        goal_pos = None
+
         if hand_gesture is not None:
-            goal_pos = hand_pos
-        else:
+            if (hand_gesture == "FIST"):
+                gps_subscriber.publish_threat_msg(hand_pos)
+                threat = True
+            elif (hand_gesture == "OPEN PALM"):
+                goal_pos = hand_pos
+                gps_subscriber.publish_food_msg(hand_pos)
+        
+        if (threat):
+            print("Threat!!")
+            
+            goal_pos = to_real_pos(home_grid_pos[0], home_grid_pos[1])
+
+            g_pos = to_grid_pos(odom.x, odom.y)
+
+            if (math.dist((odom.x, odom.y), goal_pos) <= 0.2):
+                threat = False
+
+            #if (g_pos[0] == goal_pos[0] and g_pos[1] == goal_pos[1]):
+            #    threat = False
+        
+        if (goal_pos is None):
             goal_pos = (odom.x, odom.y)
             
         odom.update(enc_left.get_ticks(), enc_right.get_ticks())
 
         path = run_planner_live.astar(occupancy, to_grid_pos(odom.x, odom.y), to_grid_pos(goal_pos[0], goal_pos[1]))
-        print("Robot grid:", to_grid_pos(odom.x, odom.y), "end grid:",to_grid_pos(goal_pos[0], goal_pos[1]))
+        #print("Robot grid:", to_grid_pos(odom.x, odom.y), "end grid:",to_grid_pos(goal_pos[0], goal_pos[1]))
 
         left_speed = 0
         right_speed = 0
@@ -224,21 +261,24 @@ def main(args=None):
             else:
                 #print("Moving to exact position:", goal_pos)
                 left_speed, right_speed = compute_motor_speeds(odom.x, odom.y, odom.theta, goal_pos[0], goal_pos[1])
-        
+
         motor_controller.drive((left_speed, right_speed))
         enc_left.set_direction(left_speed)
         enc_right.set_direction(right_speed)
 
-        time.sleep(0.025)
-        #motor_controller.drive((0, 0))
-        #time.sleep(0.0008)
+        time.sleep(0.01)
+        motor_controller.drive((0, 0))
+        time.sleep(0.0005)
 
     #Shutdown
     print("Shuting down...")
     motor_controller.drive((0, 0))
-    client.close()
     gps_subscriber.destroy_node()
     rclpy.shutdown()
+    arduino.close()
+    pi.stop()
+    if (client):
+        client.close()
 
 if __name__ == '__main__':
     main()

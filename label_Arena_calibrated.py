@@ -39,11 +39,11 @@ def capture_frame_from_camera():
 img = None
 
 # Check if we should load the existing image
-if LOAD_EXISTING and os.path.exists(IMAGE_PATH):
-    print(f"Loading existing reference image: {IMAGE_PATH}")
-    img = cv2.imread(IMAGE_PATH)
-    if img is None:
-        print("Error loading image. Falling back to camera capture.")
+#if LOAD_EXISTING and os.path.exists(IMAGE_PATH):
+#    print(f"Loading existing reference image: {IMAGE_PATH}")
+#    img = cv2.imread(IMAGE_PATH)
+#    if img is None:
+#        print("Error loading image. Falling back to camera capture.")
 
 # If loading failed or was disabled, capture from camera
 if img is None:
@@ -141,6 +141,7 @@ def mouse_callback(event, x, y, flags, param):
     if event == cv2.EVENT_LBUTTONDOWN:
         r = int(y / cell_h)
         c = int(x / cell_w)
+        print(r, c)
         if 0 <= r < GRID_ROWS and 0 <= c < GRID_COLS:
             if current_mode == "obstacle":
                 occupancy[r, c] = 1 - occupancy[r, c]
