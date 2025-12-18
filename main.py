@@ -174,6 +174,8 @@ def main(args=None):
     
     occupancy = np.load(OCC_PATH)
 
+    energy = 1000
+
     while (running):
         if (toolgate2):
             if (gps_subscriber.debug_vel_x != 0 or gps_subscriber.debug_vel_y != 0):
@@ -188,8 +190,19 @@ def main(args=None):
         if (status is not None):
             
             if (status.light == 1 or status.gas == 1):
-                gps_subscriber.publish_threat_msg((odom.x, odom.y))
-                threat = True
+                print("New Energy")
+                energy += 20
+                
+
+        energy -= 1
+        if (energy < 0):
+            energy = 0
+        print("Energy:", energy)
+
+        if (energy > 1000):
+            gps_subscriber.publish_threat_msg((odom.x, odom.y))
+            threat = True
+            energy = 0
 
         if (gps_subscriber.new_position):
             gps_subscriber.new_position = False
@@ -228,13 +241,8 @@ def main(args=None):
             
             goal_pos = to_real_pos(home_grid_pos[0], home_grid_pos[1])
 
-            g_pos = to_grid_pos(odom.x, odom.y)
-
             if (math.dist((odom.x, odom.y), goal_pos) <= 0.2):
                 threat = False
-
-            #if (g_pos[0] == goal_pos[0] and g_pos[1] == goal_pos[1]):
-            #    threat = False
         
         if (goal_pos is None):
             goal_pos = (odom.x, odom.y)
@@ -242,7 +250,6 @@ def main(args=None):
         odom.update(enc_left.get_ticks(), enc_right.get_ticks())
 
         path = run_planner_live.astar(occupancy, to_grid_pos(odom.x, odom.y), to_grid_pos(goal_pos[0], goal_pos[1]))
-        #print("Robot grid:", to_grid_pos(odom.x, odom.y), "end grid:",to_grid_pos(goal_pos[0], goal_pos[1]))
 
         left_speed = 0
         right_speed = 0
